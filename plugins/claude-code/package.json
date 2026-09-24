@@ -1,0 +1,9 @@
+{
+  "name": "codex-claude-code-runtime",
+  "version": "0.12.2",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  }
+}

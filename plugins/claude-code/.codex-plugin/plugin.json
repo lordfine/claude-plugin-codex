@@ -1,7 +1,7 @@
 {
   "name": "claude-code",
-  "version": "0.11.3",
-  "description": "Consult Claude Code from inside Codex — hand a task to Claude and get a gentle, thorough pass back in the same repo.",
+  "version": "0.12.2",
+  "description": "让 Codex 管理 Claude Code 可见会话、权限、进度与验收。",
   "author": {
     "name": "cc-plugin-codex"
   },
@@ -9,14 +9,14 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Claude Code",
-    "shortDescription": "Delegate tasks to Claude Code, gently.",
-    "longDescription": "Lets Codex consult Claude Code as a collaborative second agent. Claude runs in the same repository via its headless mode, reusing your existing Claude login, and reports back. Gentle by default: it investigates and advises without editing unless you ask it to.",
+    "shortDescription": "Codex 指挥 Claude Code 执行与审查任务。",
+    "longDescription": "通过本地桥接器创建可见 Claude Code 会话，管理独立工作树、增量进度、敏感权限、只读审查和验收合并；继承用户现有 Claude Code 配置。",
     "developerName": "cc-plugin-codex",
     "category": "Productivity",
     "capabilities": [],
     "defaultPrompt": [
-      "Have Claude Code redesign this page and make sure it still works",
-      "Get a gentle second opinion from Claude on this change"
+      "让 Claude Code 在独立工作树实现此需求，并由 Codex 验收",
+      "让 Claude Code 审查此项改动"
     ]
   }
 }

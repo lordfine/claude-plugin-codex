@@ -17,16 +17,21 @@ import { fileURLToPath } from "node:url";
 
 import { runClaude } from "./lib/claude-runner.mjs";
 import { getLastSession, setLastSession } from "./lib/session-store.mjs";
-import { checkClaudeReadiness, renderReadiness } from "./lib/claude-status.mjs";
 import { openProgressLog, progressLogPath } from "./lib/progress-log.mjs";
 import { generateJobId, listJobs, nowIso, pruneJobs, readJob, updateJob, writeJob } from "./lib/jobs.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
 import { runVerify, renderVerify } from "./lib/verify.mjs";
 import { loadSettings } from "./lib/settings.mjs";
 import { collectDiff } from "./lib/git-diff.mjs";
+import { checkManagedReadiness } from "./lib/managed-readiness.mjs";
+import {
+  createManagedTask, createReviewTask, listManagedTasks, managedStatus, managedTranscript, control, waitManaged,
+  pendingPermissions, decidePermission, openVisibleWindow, setConcurrencyLimit, cancelManaged,
+  managedDiff, mergeManaged
+} from "./lib/managed-service.mjs";
 
 const SERVER_NAME = "claude-code";
-const SERVER_VERSION = "0.11.3";
+const SERVER_VERSION = "0.12.2";
 
 // claude CLI's --effort levels (claude --help).
 const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -145,13 +150,13 @@ const CONSULT_TOOL = {
 const SETUP_TOOL = {
   name: "setup",
   description:
-    "Check that Claude Code is installed and signed in so the consult tool will work. Reports readiness (node, claude version, login) and any next steps to fix it. Pass deep=true to verify the login with a quick live call.",
+    "检查 Node.js、Claude Code、当前模型配置和原生终端依赖；依赖缺失时在插件缓存目录安装。deep=true 会额外执行一次小型 Claude 登录验证。",
   inputSchema: {
     type: "object",
     properties: {
       deep: {
         type: "boolean",
-        description: "Verify the Claude login with a tiny live `claude -p` call (costs a small amount). Default false."
+        description: "通过一次简短真实 Claude 回复验证当前配置，消耗少量模型用量；默认 false。"
       }
     },
     additionalProperties: false
@@ -236,7 +241,90 @@ const REVIEW_TOOL = {
   }
 };
 
-const TOOLS = [CONSULT_TOOL, REVIEW_TOOL, SETUP_TOOL, STATUS_TOOL, RESULT_TOOL, CANCEL_TOOL];
+const MANAGED_TOOLS = [
+  {
+    name: "delegate_create",
+    description: "创建托管 Claude Code 会话。新实现任务自动创建独立 Git 工作树；传入精确 session_id 时在原 cwd 续接既有会话。默认打开原生可见窗口，并复用当前 Claude Code/CCswitch 配置。",
+    inputSchema: { type: "object", properties: {
+      cwd: { type: "string", description: "绝对工作目录" },
+      session_id: { type: "string", description: "仅接入既有会话时填写精确 UUID" },
+      existing_idle_confirmed: { type: "boolean", description: "既有会话原进程已退出时才设 true；活动中的外部窗口不能被本桥接器直接接管" },
+      model: { type: "string", description: "当前配置中的模型槽或实际模型名；省略则继承" },
+      prompt: { type: "string", description: "可选的首条任务指令，待会话就绪后发送" },
+      max_minutes: { type: "integer" }, max_turns: { type: "integer" }, subagent_limit: { type: "integer" },
+      controller_id: { type: "string", description: "主控 Codex 任务 ID；通常从环境自动获取" },
+      visible: { type: "boolean", description: "是否自动打开可见窗口，默认 true" }
+    }, required: ["cwd"], additionalProperties: false }
+  },
+  {
+    name: "delegate_list", description: "列出当前主控任务的托管 Claude 会话、并发名额和排队状态。",
+    inputSchema: { type: "object", properties: { controller_id: { type: "string" } }, additionalProperties: false }
+  },
+  {
+    name: "delegate_status", description: "读取托管任务状态和增量事件。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, cursor: { type: "integer" }, limit: { type: "integer" }, controller_id: { type: "string" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_transcript", description: "按需读取指定 Claude 会话近期的助手正文，用于查看实现交付或只读审查短报告。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, max_chars: { type: "integer" }, controller_id: { type: "string" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_wait", description: "等待托管任务的关键事件；最长 60 秒，返回增量游标。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, cursor: { type: "integer" }, seconds: { type: "number" }, controller_id: { type: "string" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_send", description: "向指定托管 Claude 会话排入一条指令，返回唯一指令 ID；状态须继续以事件确认。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, prompt: { type: "string" }, controller_id: { type: "string" } }, required: ["task_id", "prompt"], additionalProperties: false }
+  },
+  {
+    name: "delegate_takeover", description: "Codex 接管指定会话；默认等待当前轮结束，immediate=true 才中断。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, immediate: { type: "boolean" }, controller_id: { type: "string" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_permissions", description: "读取或决定 Claude 敏感操作。未知操作由 Codex 决定；凭据等 user 类仅可拒绝，允许须用户在 Claude 窗口亲自操作。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, decision_id: { type: "string" }, decision: { type: "string", enum: ["allow", "deny"] }, reason: { type: "string" }, controller_id: { type: "string" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_open", description: "打开或重新打开原生可见 Claude Code 窗口；Ctrl+D 只关闭窗口。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, controller_id: { type: "string" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_limit", description: "设置当前 Codex 主控任务的顶层 Claude 并发上限（1 至 10；默认 3）。",
+    inputSchema: { type: "object", properties: { limit: { type: "integer" }, controller_id: { type: "string" } }, required: ["limit"], additionalProperties: false }
+  },
+  {
+    name: "delegate_cancel", description: "取消指定托管 Claude 会话。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, controller_id: { type: "string" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_review", description: "为已空闲的实现任务创建独立只读 Claude 审查会话，输出短报告，Codex 负责最终验收。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, focus: { type: "string" }, model: { type: "string" }, max_minutes: { type: "integer" }, controller_id: { type: "string" }, visible: { type: "boolean" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_diff", description: "列出实现任务相对基准提交的改动范围，供 Codex 验收；临时 /交还 命令文件须排除。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, controller_id: { type: "string" } }, required: ["task_id"], additionalProperties: false }
+  },
+  {
+    name: "delegate_merge", description: "Codex 完成审查和定向检查后，把独立工作树合并进创建时的目标分支；要求对应只读审查任务和验收结论，冲突留给 Codex 处理。",
+    inputSchema: { type: "object", properties: { task_id: { type: "string" }, review_id: { type: "string" }, verification: { type: "string" }, controller_id: { type: "string" } }, required: ["task_id", "review_id", "verification"], additionalProperties: false }
+  }
+];
+const TOOLS = [SETUP_TOOL, ...MANAGED_TOOLS];
+
+function managedResult(value) {
+  return { content: [{ type: "text", text: JSON.stringify(value) }] };
+}
+
+async function handleManagedCreate(args) {
+  const created = createManagedTask(args);
+  return managedResult({ ...created, window: args.visible === false ? "disabled" : "opens_when_started",
+    initialPrompt: args.prompt ? "passed_to_claude_startup" : null });
+}
+
+async function handleManagedReview(args) {
+  const created = createReviewTask(args.task_id, args);
+  return managedResult({ ...created, window: args.visible === false ? "disabled" : "opens_when_started" });
+}
 
 // Separate files inside the task directory from artifacts written elsewhere
 // (Claude's plan file, notes, …) — only the former are repo changes.
@@ -675,8 +763,8 @@ async function handleReview(args, ctx) {
 async function handleSetup(args) {
   const deep = Boolean(args?.deep);
   log(`setup: deep=${deep}`);
-  const status = await checkClaudeReadiness({ deep });
-  return { content: [{ type: "text", text: renderReadiness(status) }] };
+  const status = checkManagedReadiness({ deep });
+  return managedResult(status);
 }
 
 // Resolve the target job, distinguishing "no jobs at all" from "the id you gave
@@ -869,12 +957,23 @@ async function handleMessage(message) {
       return;
     case "tools/call": {
       const handlers = {
-        consult: handleConsult,
-        review: handleReview,
         setup: handleSetup,
-        consult_status: handleStatusTool,
-        consult_result: handleResultTool,
-        consult_cancel: handleCancelTool
+        delegate_create: handleManagedCreate,
+        delegate_list: (args) => managedResult(listManagedTasks(args.controller_id)),
+        delegate_status: (args) => managedResult(managedStatus(args.task_id, args.controller_id, args.cursor, args.limit)),
+        delegate_transcript: (args) => managedResult(managedTranscript(args.task_id, args.controller_id, args.max_chars)),
+        delegate_wait: async (args) => managedResult(await waitManaged(args.task_id, args.cursor, args.seconds, args.controller_id)),
+        delegate_send: async (args) => managedResult(await control(args.task_id, { type: "send", prompt: args.prompt }, args.controller_id)),
+        delegate_takeover: async (args) => managedResult(await control(args.task_id, { type: "takeover", immediate: args.immediate }, args.controller_id)),
+        delegate_permissions: (args) => managedResult(args.decision_id
+          ? decidePermission(args.task_id, args.decision_id, args.decision, args.reason, args.controller_id)
+          : pendingPermissions(args.task_id, args.controller_id)),
+        delegate_open: (args) => managedResult(openVisibleWindow(args.task_id, args.controller_id)),
+        delegate_limit: (args) => managedResult(setConcurrencyLimit(args.limit, args.controller_id)),
+        delegate_cancel: async (args) => managedResult(await cancelManaged(args.task_id, args.controller_id)),
+        delegate_review: handleManagedReview,
+        delegate_diff: (args) => managedResult(managedDiff(args.task_id, args.controller_id)),
+        delegate_merge: async (args) => managedResult(await mergeManaged(args.task_id, args.review_id, args.verification, args.controller_id))
       };
       const handler = handlers[params?.name];
       if (!handler) {
@@ -1038,11 +1137,6 @@ function shutdown(why) {
 
 function main() {
   log(`starting (plugin root: ${PLUGIN_ROOT})`);
-  if (process.platform === "win32") {
-    log(
-      "warning: Windows is not fully supported — process-group termination and bash-based auto-verify are unavailable, so cancellation may leave child processes running"
-    );
-  }
   let buffer = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {
@@ -1061,8 +1155,7 @@ function main() {
         log(`failed to parse incoming line: ${err.message}`);
         continue;
       }
-      // Dispatch without blocking the read loop so long consults don't stall
-      // pings or other messages.
+      // 不阻塞输入循环，等待事件的工具与其他 MCP 请求可以并行。
       Promise.resolve(handleMessage(message)).catch((err) => log(`handler error: ${err?.message ?? err}`));
     }
   });

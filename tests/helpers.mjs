@@ -37,7 +37,8 @@ export function fakeClaudeEnv(tmpHome, extra = {}) {
   const env = {
     ...process.env,
     HOME: tmpHome,
-    PATH: `${FIXTURES_BIN}:${process.env.PATH}`,
+    USERPROFILE: tmpHome,
+    PATH: `${FIXTURES_BIN}${path.delimiter}${process.env.PATH}`,
     // point the verify policy at a (normally nonexistent) file inside the temp
     // home so the user's real settings never leak into tests
     CC_PLUGIN_CODEX_SETTINGS: path.join(tmpHome, "settings.json"),
