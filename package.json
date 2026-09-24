@@ -9,8 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node scripts/运行测试.mjs",
-    "test:legacy": "node --test tests/jobs.test.mjs tests/review.test.mjs tests/runner.test.mjs tests/server-lifecycle.test.mjs tests/status.test.mjs tests/verify.test.mjs"
+    "test": "node scripts/运行测试.mjs"
   },
   "dependencies": {
     "node-pty": "^1.1.0"
