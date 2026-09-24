@@ -91,7 +91,17 @@ function invalidatePendingPermissions(task) {
 
 function reconcile(task) {
   const runtime = readRuntime(task.id);
-  if (!runtime || runtime.status === "exited" || isAlive(runtime.pid)) return;
+  if (!runtime) return;
+  if (runtime.status === "exited") {
+    if (["starting", "running"].includes(task.state)) {
+      task.state = runtime.finalState || (runtime.exitCode === 0 ? "exited"
+        : task.recoveryAttempts ? "paused" : "failed");
+      writeTask(task);
+      appendEvent(task.id, { type: "exited_state_repaired", state: task.state });
+    }
+    return;
+  }
+  if (isAlive(runtime.pid)) return;
   if (isAlive(runtime.claudePid) || claudeSessionStillRunning(task)) {
     task.state = "paused";
     writeTask(task);

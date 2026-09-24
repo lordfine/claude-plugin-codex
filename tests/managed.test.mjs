@@ -34,6 +34,15 @@ test("任务状态和增量事件可持久化", () => {
   assert.deepEqual(state.readEvents(id, 1).events.map((event) => event.type), ["instruction_submitted"]);
 });
 
+test("进程已退出而任务仍显示启动中时自动修复状态", () => {
+  const id = crypto.randomUUID(), controller = "退出对账主控";
+  state.writeTask({ id, controllerId: controller, state: "starting", recoveryAttempts: 1 });
+  state.writeRuntime(id, { status: "exited", exitCode: 1, finalState: "paused" });
+  service.reconcileTask(id);
+  assert.equal(state.readTask(id).state, "paused");
+  assert.ok(state.readEvents(id, 0, 20).events.some((event) => event.type === "exited_state_repaired"));
+});
+
 test("模型选择只接受当前 Claude Code 配置中的名称", () => {
   assert.equal(state.resolveModel(), null);
   assert.equal(state.resolveModel("sonnet"), "deepseek-flash");

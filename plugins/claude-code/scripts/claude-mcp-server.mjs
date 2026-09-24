@@ -31,7 +31,7 @@ import {
 } from "./lib/managed-service.mjs";
 
 const SERVER_NAME = "claude-code";
-const SERVER_VERSION = "0.12.0";
+const SERVER_VERSION = "0.12.1";
 
 // claude CLI's --effort levels (claude --help).
 const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);

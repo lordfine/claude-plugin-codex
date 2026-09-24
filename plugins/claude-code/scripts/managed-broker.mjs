@@ -49,6 +49,7 @@ startupResize.unref();
 let connected = null;
 let exited = false;
 let exitCode = null;
+let finalState = null;
 let limitHit = false;
 let cancelRequested = false;
 let ready = false;
@@ -101,7 +102,7 @@ const writeState = () => writeRuntime(id, {
   humanQueued, humanDraft, humanInFlightCount: inFlightPrompts.filter((item) => item.kind === "human").length,
   backgroundTasks, activeSubagents: [...activeSubagents],
   current, queue, connected: Boolean(connected && !connected.destroyed),
-  exitCode, startedAt: new Date(startedAt).toISOString(), updatedAt: new Date().toISOString()
+  exitCode, finalState, startedAt: new Date(startedAt).toISOString(), updatedAt: new Date().toISOString()
 });
 const submitted = (item) => {
   current = item;
@@ -167,7 +168,7 @@ terminal.onData((data) => {
 terminal.onExit(({ exitCode: code }) => {
   exited = true;
   exitCode = code;
-  const finalState = task.recoveryAttempts && code !== 0 ? "paused"
+  finalState = task.recoveryAttempts && code !== 0 ? "paused"
     : limitHit ? "timed_out" : cancelRequested ? "cancelled" : code === 0 ? "exited" : "failed";
   writeTask({ ...readTask(id), state: finalState });
   if (finalState === "paused") appendEvent(id, { type: "recovery_failed", exitCode: code });
