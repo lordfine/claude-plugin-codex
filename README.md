@@ -1,217 +1,43 @@
-# claude-plugin-codex
+# Codex 指挥 Claude Code
 
-Consult Claude Code from inside Codex.
+这个 fork 让 Codex 通过本地 MCP 桥接器管理 Claude Code 原生窗口：创建独立工作树、持续接收进度、追加指令、处理敏感权限、安排只读审查，并在验收后合并。Codex 仍可亲自修改代码。
 
-**English** | [한국어](./README.ko.md) | [日本語](./README.ja.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md)
+项目源自 [claude-plugin-codex](https://github.com/xavierchoi/claude-plugin-codex)。需求与边界见[协作需求](./docs/协作需求.md)、[实施方案](./docs/实施方案.md)、[最小验证记录](./docs/最小验证记录.md)。
 
-[![tests](https://github.com/xavierchoi/claude-plugin-codex/actions/workflows/test.yml/badge.svg)](https://github.com/xavierchoi/claude-plugin-codex/actions/workflows/test.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+## 环境与安装
 
-This plugin is for Codex users who want an easy way to consult Claude Code
-from the workflow they already have. Describe a task in plain language and
-Claude runs in the same repository — with the Claude login you already have —
-and reports back with a careful second pass.
+- Node.js 20+、Claude Code CLI、Git。
+- Windows 可见窗口需要 Windows Terminal 和 PowerShell 7；终端代理使用 `node-pty`。
+- 继续使用用户当前的 Claude Code 登录及 CCswitch 配置。插件不会切换 CCswitch；指定模型时只能选择当前配置中的模型槽或实际标识，例如 `glm-5.3`。
 
-It is a companion to [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc),
-which connects the same two tools in the other direction. If you work with
-both agents, the two plugins complete the circle.
+开发此仓库时可在根目录执行 `npm install`。将仓库作为本地 Codex 插件市场添加并安装：
 
-```text
-you   ▸ have claude redesign the landing page and make sure it still builds
-
-codex ▸ claude-code.consult(prompt=…, edit=true, background=true, verify="auto")
-        Started background consult job job-a1b2c3.
-
-codex ▸ 🤝 Claude Code made changes in ~/projects/site.
-        Redesigned src/app/page.tsx with a bolder hero and …
-        Files Claude touched:
-        - src/app/page.tsx
-        🔍 Verification: `node --check 'src/app/page.tsx'` → ✅ exit 0
-        ( 14 turns · 3m41s · ≈$0.42 of plan usage )
-```
-
-## What You Get
-
-A `claude-code` MCP server (Node, zero dependencies) with six tools:
-
-- `consult` — hand a task to Claude Code, advisory by default
-- `review` — a careful, read-only review of your uncommitted changes or branch
-- `consult_status` / `consult_result` / `consult_cancel` — manage background jobs
-- `setup` — check that Claude Code is installed and signed in
-
-You don't call these directly. The bundled skill teaches Codex to pick the
-right tool and options (`edit`, `background`, `verify`, `resume`) from what
-you say.
-
-## Requirements
-
-- **Claude Code**, installed and signed in:
-
-  ```bash
-  curl -fsSL https://claude.ai/install.sh | bash
-  claude   # run once to sign in
-  ```
-
-  Consults run through your existing Claude login, so usage draws on your
-  Claude plan — there is no separate bill. Results include an estimate such as
-  `≈$0.42 of plan usage` for transparency. (Only if you set
-  `ANTHROPIC_API_KEY` are calls API-billed, and labeled accordingly.)
-
-- **Node.js 20+**
-- **Codex** with plugin support, on Linux or macOS.
-
-## Install
-
-```bash
-codex plugin marketplace add xavierchoi/claude-plugin-codex
+```powershell
+codex plugin marketplace add D:\projects\claude-plugin-codex
 codex plugin add claude-code@claude-plugin-codex
 ```
 
-Then ask Codex: *“Is Claude ready?”* — it runs the `setup` tool and reports
-anything that needs fixing, with the exact commands to fix it.
+若克隆到其他位置，请替换第一条命令中的路径。首次创建托管会话时，插件会在 Codex 的已安装插件缓存内安装 `node-pty` 终端依赖，因此需要本机 `npm` 可用。Codex 插件配置位于 `plugins/claude-code/.mcp.json`，指向 `scripts/claude-mcp-server.mjs`。修改插件后需重新安装或刷新插件并重新加载 MCP 服务；正在运行的托管 Claude 会话由独立后台进程持有。
 
-## Usage
+## 工作流程
 
-### Ask for a second opinion
+1. Codex 用 `delegate_create` 传入绝对 `cwd` 和任务 `prompt`。新实现任务会创建独立 Git 工作树和可见 Claude Code 窗口。模型默认继承用户配置。
+2. 用 `delegate_wait` 按游标等待关键事件，用 `delegate_status` 查看状态，用 `delegate_transcript` 按需读取交付正文。`delegate_send` 返回指令 ID；`instruction_submitted` 才证明 Claude 收到，`instruction_completed` 证明该轮结束。
+3. 用户可以直接在 Claude 窗口输入；`/交还` 交回 Codex。Codex 用 `delegate_takeover` 接管；默认等当前轮和人工指令，`immediate=true` 才中断。`Ctrl+D` 只关闭可见窗口，后台会话继续；`delegate_open` 可重新打开。
+4. `delegate_permissions` 列出待决敏感操作，Codex 审核后允许或拒绝。凭据读取等 `user` 类只能由用户在 Claude 窗口批准。桥接器失联时不自动放行。
+5. 实现结束后，Codex 用 `delegate_diff` 核对范围，用 `delegate_review` 保存实现快照并创建独立审查工作树。审查会话可在隔离副本运行定向检查；Codex 读取短报告并最终验收。通过后用 `delegate_merge` 合并到创建任务时的目标分支；若实现分支在审查后变化，须重新审查。遇到冲突由 Codex 处理，意图不明时请用户决定。
 
-```text
-Get a second opinion from Claude on this change.
-Ask Claude why this query is slow.
-```
+每个 Codex 主控任务默认并发 3 个顶层 Claude 会话，可用 `delegate_limit` 调至最多 10 个；超额任务排队并在名额空出后启动。Claude 子代理不占顶层名额，单会话子代理并发默认 8、最多 20。任务默认 90 分钟、主会话 120 轮，可逐项调整。
 
-By default Claude runs in plan mode: it investigates and advises without
-touching files.
+## 既有会话
 
-### Ask for a review
+可用精确 Claude 会话 UUID 和原 `cwd` 续接。原会话进程必须先退出，再传 `session_id` 与 `existing_idle_confirmed=true`；桥接器不会向另一个正在运行的外部窗口注入指令。续接保留原目录和 Claude 会话记录。
 
-```text
-Have Claude review my changes.
-Have Claude review this branch against main — focus on the retry logic.
-```
+## 当前限制
 
-The server collects the git diff itself — your uncommitted changes, or
-everything since a base branch — and Claude reviews it read-only: a short
-summary, what works well, findings by severity with file:line references,
-and an honest verdict.
+- 终端代理已在 Windows 的 Claude Code 2.1.259、当前 CCswitch 自定义模型环境中完成短任务验证；其他平台的可见终端仍需适配。
+- Codex 默认接管通过当前轮结束后的静默期估计人工输入队列是否清空；复杂排队情形仍需验证。最明确的交接方式是窗口里的 `/交还`。
+- `delegate_wait` 能在 Codex 正在等待时返回关键事件；Codex 任务结束后自动唤醒需要宿主提供后续调度能力，目前桥接器只会持久保存事件。
+- 上游旧 `consult` 等短咨询实现仍留作历史参考，MCP 已不再提供这些接口；对应 Unix 测试不计入当前托管功能验收。
 
-### Let Claude make changes
-
-```text
-Have Claude clean up the data layer and check it still compiles.
-```
-
-When you ask for changes, Codex sets `edit: true` and, for code edits,
-`verify: "auto"` — after Claude finishes, the server runs a quick syntax
-check on the touched files and appends the outcome to the result.
-
-### Longer tasks
-
-```text
-Have Claude redesign the dashboard — take its time.
-```
-
-Work beyond a quick pass runs as a background job. Codex reports the job id,
-waits efficiently (`consult_status` supports long-polling), and presents the
-result when it's done. You can ask for the status or cancel at any time, and
-every run writes a live log you can follow:
-
-```bash
-tail -f ~/.cache/cc-plugin-codex/logs/latest.log
-```
-
-> [!NOTE]
-> Foreground consults show no progress in the UI and are capped at 28
-> minutes. For anything substantial, background is the comfortable path —
-> the skill steers Codex there on its own.
-
-### Continue where Claude left off
-
-```text
-Have Claude refine that, and also fix the tests.
-```
-
-Session ids are remembered per directory, so follow-ups continue the same
-Claude conversation.
-
-### Use your Claude Code skills
-
-Claude runs with the skills you have installed in Claude Code:
-
-```text
-Have Claude use the frontend-design skill to redesign this page.
-```
-
-### Choose model and effort
-
-```text
-Have Claude take a quick, cheap look at this.        → effort: low
-Ask Claude to think hard about this race condition.  → effort: high
-Have opus review this design.                        → model: opus
-```
-
-Mention it and Codex passes it through (`--model` accepts aliases like
-`sonnet`/`opus`/`fable` or full names; `--effort` is `low`…`max`). When you
-don't, the default model is **`fable`** — the newest Claude — falling back
-automatically to `opus`, then `sonnet`, when a plan can't serve it. The
-result's meta line shows which model actually answered. To change the default, add to
-`~/.config/cc-plugin-codex/settings.json`:
-
-```json
-{ "model": "opus", "effort": "medium" }
-```
-
-Set `"model": "inherit"` to defer to your own Claude configuration instead.
-
-## Verification policy
-
-The `verify` command runs from the MCP server without an approval gate, so
-it is policy-gated for safety. The default policy `safe` allows `"auto"` and
-plain invocations of well-known build/test tools (npm, pytest, cargo, go,
-make, …) with no shell operators. Configure in
-`~/.config/cc-plugin-codex/settings.json`:
-
-```json
-{ "verify": "safe" }
-```
-
-- `"auto-only"` — only `verify: "auto"` may run
-- `"safe"` — the default, described above
-- `"all"` — any command; use only if you trust everything that can reach the tool
-
-## Updating
-
-```bash
-codex plugin marketplace upgrade claude-plugin-codex
-codex plugin add claude-code@claude-plugin-codex
-```
-
-Then start a fresh Codex session: sessions that were already open keep the
-old server process, and upgrading underneath them can close their bridge
-(tool calls would fail with "Transport closed").
-
-## How It Works
-
-```
-Codex ──(MCP: consult)──▶ claude-code MCP server (Node, zero deps)
-                               │
-                               ├─▶ claude -p  (headless, in your repo,
-                               │              your login, plan mode unless edit)
-                               ├─▶ optional verify command after the edits
-                               └─▶ parsed result ──▶ back to Codex
-```
-
-Background jobs are detached workers with file-backed state: a 45-minute
-watchdog, a concurrency cap, stale-job reconciliation, and process-group
-cancellation — a cancelled or abandoned consult never leaves a Claude
-process running.
-
-## Development
-
-```bash
-npm test        # full suite against a fake claude binary — fast, no usage
-npm run test:live   # opt-in smoke tests against the real claude
-```
-
-## License
-
-[MIT](./LICENSE)
+当前实现与逐项验证状态见[实现状态](./docs/实现状态.md)。

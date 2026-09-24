@@ -28,11 +28,14 @@ test("initialize: echoes a supported older protocolVersion", async () => {
   assert.equal(init.result.protocolVersion, "2024-11-05");
 });
 
-test("tools/list exposes exactly the six tools", async () => {
+test("tools/list 只公开准备检查与托管会话工具", async () => {
   const tl = await server.rpc("tools/list", {});
   assert.deepEqual(
     tl.result.tools.map((t) => t.name).sort(),
-    ["consult", "consult_cancel", "consult_result", "consult_status", "review", "setup"]
+    ["delegate_cancel", "delegate_create", "delegate_diff", "delegate_limit", "delegate_list",
+      "delegate_merge", "delegate_open", "delegate_permissions", "delegate_review",
+      "delegate_send", "delegate_status", "delegate_takeover", "delegate_transcript", "delegate_wait",
+      "setup"]
   );
 });
 
@@ -55,27 +58,15 @@ test("unknown method → -32601, unknown tool → -32602", async () => {
   assert.equal(um.error.code, -32601);
   const ut = await server.rpc("tools/call", { name: "nope", arguments: {} });
   assert.equal(ut.error.code, -32602);
+  const old = await server.rpc("tools/call", { name: "consult", arguments: {} });
+  assert.equal(old.error.code, -32602);
 });
 
-test("consult argument validation is friendly", async () => {
-  const noCwd = await server.rpc("tools/call", { name: "consult", arguments: { prompt: "hi" } });
-  assert.equal(noCwd.result.isError, true);
-  assert.match(text(noCwd), /pass `cwd`/);
-
-  const badCwd = await server.rpc("tools/call", { name: "consult", arguments: { prompt: "hi", cwd: "/no/such/dir/xyz" } });
-  assert.equal(badCwd.result.isError, true);
-  assert.match(text(badCwd), /not an existing directory/);
-
-  const noPrompt = await server.rpc("tools/call", { name: "consult", arguments: { cwd: "/tmp" } });
-  assert.equal(noPrompt.result.isError, true);
-  assert.match(text(noPrompt), /prompt/);
-});
-
-test("job tools distinguish 'no jobs' from 'unknown id'", async () => {
-  const none = await server.rpc("tools/call", { name: "consult_status", arguments: {} });
-  assert.match(text(none), /No background consult jobs found/);
-  const bogus = await server.rpc("tools/call", { name: "consult_status", arguments: { job_id: "job-doesnotexist" } });
-  assert.match(text(bogus), /No job found with id `job-doesnotexist`/);
-  const bogusResult = await server.rpc("tools/call", { name: "consult_result", arguments: { job_id: "job-doesnotexist" } });
-  assert.match(text(bogusResult), /No job found with id/);
+test("setup 报告当前托管环境，不沿用旧的 Windows 不支持提示", async () => {
+  const result = await server.rpc("tools/call", { name: "setup", arguments: {} });
+  const status = JSON.parse(text(result));
+  assert.equal(status.platform, process.platform);
+  assert.equal(status.terminal.ready, true);
+  assert.equal(status.login.verified, false);
+  assert.ok(status.models && typeof status.models === "object");
 });

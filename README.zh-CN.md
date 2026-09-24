@@ -1,206 +1,43 @@
-# claude-plugin-codex
+# Codex 指挥 Claude Code
 
-在 Codex 中直接咨询 Claude Code。
+这个 fork 让 Codex 通过本地 MCP 桥接器管理 Claude Code 原生窗口：创建独立工作树、持续接收进度、追加指令、处理敏感权限、安排只读审查，并在验收后合并。Codex 仍可亲自修改代码。
 
-[English](./README.md) | [한국어](./README.ko.md) | [日本語](./README.ja.md) | **简体中文** | [繁體中文](./README.zh-TW.md)
+项目源自 [claude-plugin-codex](https://github.com/xavierchoi/claude-plugin-codex)。需求与边界见[协作需求](./docs/协作需求.md)、[实施方案](./docs/实施方案.md)、[最小验证记录](./docs/最小验证记录.md)。
 
-[![tests](https://github.com/xavierchoi/claude-plugin-codex/actions/workflows/test.yml/badge.svg)](https://github.com/xavierchoi/claude-plugin-codex/actions/workflows/test.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+## 环境与安装
 
-这个插件面向希望在现有工作流中轻松借助 Claude Code 的 Codex 用户。用平常的
-语言描述任务，Claude 就会在同一个仓库里运行 —— 使用你已登录的 Claude 账号 ——
-并带着一份细致的复查结果回来。
+- Node.js 20+、Claude Code CLI、Git。
+- Windows 可见窗口需要 Windows Terminal 和 PowerShell 7；终端代理使用 `node-pty`。
+- 继续使用用户当前的 Claude Code 登录及 CCswitch 配置。插件不会切换 CCswitch；指定模型时只能选择当前配置中的模型槽或实际标识，例如 `glm-5.3`。
 
-它与 [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)
-互为补充：后者把这两个工具沿相反的方向连接起来。如果你同时使用这两个
-智能体，这两个插件正好构成一个完整的闭环。
+开发此仓库时可在根目录执行 `npm install`。将仓库作为本地 Codex 插件市场添加并安装：
 
-```text
-you   ▸ have claude redesign the landing page and make sure it still builds
-
-codex ▸ claude-code.consult(prompt=…, edit=true, background=true, verify="auto")
-        Started background consult job job-a1b2c3.
-
-codex ▸ 🤝 Claude Code made changes in ~/projects/site.
-        Redesigned src/app/page.tsx with a bolder hero and …
-        Files Claude touched:
-        - src/app/page.tsx
-        🔍 Verification: `node --check 'src/app/page.tsx'` → ✅ exit 0
-        ( 14 turns · 3m41s · ≈$0.42 of plan usage )
-```
-
-## 你将获得
-
-一个 `claude-code` MCP 服务器（Node 编写，零依赖），提供六个工具：
-
-- `consult` —— 把任务交给 Claude Code，默认仅提供建议
-- `review` —— 对未提交改动或分支进行细致的只读评审
-- `consult_status` / `consult_result` / `consult_cancel` —— 管理后台任务
-- `setup` —— 检查 Claude Code 是否已安装并登录
-
-你不需要直接调用这些工具。内置的技能会引导 Codex 根据你的话语自行选择
-合适的工具与选项（`edit`、`background`、`verify`、`resume`）。
-
-## 环境要求
-
-- **Claude Code**，已安装并登录：
-
-  ```bash
-  curl -fsSL https://claude.ai/install.sh | bash
-  claude   # 运行一次以完成登录
-  ```
-
-  consult 直接复用你现有的 Claude 登录，因此用量从你的 Claude 套餐中扣除，
-  不会产生额外账单。为保持透明，结果中会显示类似
-  `≈$0.42 of plan usage` 的估算值。（只有当你显式设置了
-  `ANTHROPIC_API_KEY` 时才按 API 计费，并会如实标注。）
-
-- **Node.js 20+**
-- 支持插件的 **Codex**，Linux 或 macOS。
-
-## 安装
-
-```bash
-codex plugin marketplace add xavierchoi/claude-plugin-codex
+```powershell
+codex plugin marketplace add D:\projects\claude-plugin-codex
 codex plugin add claude-code@claude-plugin-codex
 ```
 
-然后问问 Codex：*“Claude 准备好了吗？”* —— 它会运行 `setup` 工具，如有需要
-修复的地方，会连同具体命令一起告诉你。
+若克隆到其他位置，请替换第一条命令中的路径。首次创建托管会话时，插件会在 Codex 的已安装插件缓存内安装 `node-pty` 终端依赖，因此需要本机 `npm` 可用。Codex 插件配置位于 `plugins/claude-code/.mcp.json`，指向 `scripts/claude-mcp-server.mjs`。修改插件后需重新安装或刷新插件并重新加载 MCP 服务；正在运行的托管 Claude 会话由独立后台进程持有。
 
-## 使用方法
+## 工作流程
 
-### 寻求第二意见
+1. Codex 用 `delegate_create` 传入绝对 `cwd` 和任务 `prompt`。新实现任务会创建独立 Git 工作树和可见 Claude Code 窗口。模型默认继承用户配置。
+2. 用 `delegate_wait` 按游标等待关键事件，用 `delegate_status` 查看状态，用 `delegate_transcript` 按需读取交付正文。`delegate_send` 返回指令 ID；`instruction_submitted` 才证明 Claude 收到，`instruction_completed` 证明该轮结束。
+3. 用户可以直接在 Claude 窗口输入；`/交还` 交回 Codex。Codex 用 `delegate_takeover` 接管；默认等当前轮和人工指令，`immediate=true` 才中断。`Ctrl+D` 只关闭可见窗口，后台会话继续；`delegate_open` 可重新打开。
+4. `delegate_permissions` 列出待决敏感操作，Codex 审核后允许或拒绝。凭据读取等 `user` 类只能由用户在 Claude 窗口批准。桥接器失联时不自动放行。
+5. 实现结束后，Codex 用 `delegate_diff` 核对范围，用 `delegate_review` 保存实现快照并创建独立审查工作树。审查会话可在隔离副本运行定向检查；Codex 读取短报告并最终验收。通过后用 `delegate_merge` 合并到创建任务时的目标分支；若实现分支在审查后变化，须重新审查。遇到冲突由 Codex 处理，意图不明时请用户决定。
 
-```text
-让 Claude 看看这个改动，给点意见。
-问问 Claude 这个查询为什么慢。
-```
+每个 Codex 主控任务默认并发 3 个顶层 Claude 会话，可用 `delegate_limit` 调至最多 10 个；超额任务排队并在名额空出后启动。Claude 子代理不占顶层名额，单会话子代理并发默认 8、最多 20。任务默认 90 分钟、主会话 120 轮，可逐项调整。
 
-默认情况下 Claude 以 plan mode 运行：只调查、只建议，不触碰任何文件。
+## 既有会话
 
-### 请求代码评审
+可用精确 Claude 会话 UUID 和原 `cwd` 续接。原会话进程必须先退出，再传 `session_id` 与 `existing_idle_confirmed=true`；桥接器不会向另一个正在运行的外部窗口注入指令。续接保留原目录和 Claude 会话记录。
 
-```text
-让 Claude 评审一下我的改动。
-让 Claude 以 main 为基准评审这个分支 —— 重点看重试逻辑。
-```
+## 当前限制
 
-服务器会自行收集 git diff（未提交的改动，或自 base 分支以来的全部变更），
-Claude 以只读方式进行评审：简短摘要、做得好的地方、按严重程度排列的发现
-（附 file:line 引用），以及一个坦诚的总体结论。
+- 终端代理已在 Windows 的 Claude Code 2.1.259、当前 CCswitch 自定义模型环境中完成短任务验证；其他平台的可见终端仍需适配。
+- Codex 默认接管通过当前轮结束后的静默期估计人工输入队列是否清空；复杂排队情形仍需验证。最明确的交接方式是窗口里的 `/交还`。
+- `delegate_wait` 能在 Codex 正在等待时返回关键事件；Codex 任务结束后自动唤醒需要宿主提供后续调度能力，目前桥接器只会持久保存事件。
+- 上游旧 `consult` 等短咨询实现仍留作历史参考，MCP 已不再提供这些接口；对应 Unix 测试不计入当前托管功能验收。
 
-### 让 Claude 动手修改
-
-```text
-让 Claude 清理一下数据层，并确认还能正常编译。
-```
-
-当你要求修改时，Codex 会设置 `edit: true`；对于代码改动还会加上
-`verify: "auto"` —— Claude 完成后，服务器会对改动的文件做一次快速语法
-检查，并把结果附在回复里。
-
-### 耗时较长的任务
-
-```text
-让 Claude 重新设计仪表盘 —— 慢慢来没关系。
-```
-
-超出快速处理范围的工作会作为后台任务运行。Codex 会告知任务 id，高效地
-等待（`consult_status` 支持长轮询），完成后呈现结果。你随时可以询问状态
-或取消，每次运行都会留下可实时跟踪的日志：
-
-```bash
-tail -f ~/.cache/cc-plugin-codex/logs/latest.log
-```
-
-> [!NOTE]
-> 前台 consult 在界面上看不到进度，且有 28 分钟的上限。规模稍大的工作走
-> 后台更舒服 —— 技能会自然地引导 Codex 这样做。
-
-### 接着上次继续
-
-```text
-让 Claude 把刚才的再打磨一下，顺便把测试也修了。
-```
-
-会话 id 按目录记忆，后续请求会延续同一个 Claude 对话。
-
-### 使用你的 Claude Code 技能
-
-Claude 运行时带着你在 Claude Code 中安装的技能：
-
-```text
-让 Claude 用 frontend-design 技能重新设计这个页面。
-```
-
-### 选择模型与 effort
-
-```text
-让 Claude 快速、省钱地看一眼。              → effort: low
-这个竞态条件让 Claude 好好想想。            → effort: high
-用 opus 评审这个设计。                      → model: opus
-```
-
-只要说出来，Codex 就会原样传递（`--model` 接受 `sonnet`/`opus`/`fable` 等
-别名或完整名称；`--effort` 为 `low`…`max`）。不指定时，默认模型为
-**`fable`** —— 最新的 Claude —— 若套餐无法使用则依次自动回退到 `opus`、
-`sonnet`。结果的元信息行会显示实际作答的模型。要更改默认值，请写入
-`~/.config/cc-plugin-codex/settings.json`：
-
-```json
-{ "model": "opus", "effort": "medium" }
-```
-
-设置 `"model": "inherit"` 则沿用你自己的 Claude 配置。
-
-## verify 策略
-
-`verify` 命令由 MCP 服务器直接执行、没有审批环节，因此出于安全考虑受策略
-约束。默认策略 `safe` 只允许 `"auto"`，以及不含 shell 操作符的常见构建/
-测试工具（npm、pytest、cargo、go、make 等）的简单调用。在
-`~/.config/cc-plugin-codex/settings.json` 中配置：
-
-```json
-{ "verify": "safe" }
-```
-
-- `"auto-only"` —— 仅允许 `verify: "auto"`
-- `"safe"` —— 默认值，如上所述
-- `"all"` —— 允许任意命令；仅当你信任所有能触达该工具的内容时使用
-
-## 更新
-
-```bash
-codex plugin marketplace upgrade claude-plugin-codex
-codex plugin add claude-code@claude-plugin-codex
-```
-
-更新后请新开一个 Codex 会话：已打开的会话仍在使用旧的服务器进程，在其
-下方升级可能导致桥接断开（工具调用会以 "Transport closed" 失败）。
-
-## 工作原理
-
-```
-Codex ──(MCP: consult)──▶ claude-code MCP 服务器 (Node，零依赖)
-                               │
-                               ├─▶ claude -p  (无头模式，同一仓库,
-                               │              复用登录，非 edit 时为 plan mode)
-                               ├─▶ 修改完成后可选执行 verify 命令
-                               └─▶ 整理后的结果 ──▶ 返回给 Codex
-```
-
-后台任务以独立（detached）工作进程运行，状态落盘：45 分钟看门狗、并发上限、
-失效任务自动清理、按进程组取消 —— 被取消或被遗忘的 consult 绝不会留下
-仍在运行的 Claude 进程。
-
-## 开发
-
-```bash
-npm test        # 基于伪造 claude 二进制的完整测试套件 —— 快速且零用量
-npm run test:live   # 使用真实 claude 的可选冒烟测试
-```
-
-## 许可证
-
-[MIT](./LICENSE)
+当前实现与逐项验证状态见[实现状态](./docs/实现状态.md)。

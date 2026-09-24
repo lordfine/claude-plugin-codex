@@ -1,6 +1,6 @@
 {
   "name": "claude-plugin-codex",
-  "version": "0.11.3",
+  "version": "0.12.0",
   "private": true,
   "type": "module",
   "description": "Consult Claude Code from inside Codex — a gentle reverse of the Codex plugin for Claude Code.",
@@ -9,7 +9,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
-    "test:live": "CC_PLUGIN_CODEX_LIVE_TESTS=1 node --test tests/live.test.mjs"
+    "test": "node scripts/运行测试.mjs",
+    "test:legacy": "node --test tests/jobs.test.mjs tests/review.test.mjs tests/runner.test.mjs tests/server-lifecycle.test.mjs tests/status.test.mjs tests/verify.test.mjs"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
   }
 }
