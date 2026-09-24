@@ -1,6 +1,6 @@
 {
   "name": "claude-plugin-codex",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "private": true,
   "type": "module",
   "description": "Consult Claude Code from inside Codex — a gentle reverse of the Codex plugin for Claude Code.",

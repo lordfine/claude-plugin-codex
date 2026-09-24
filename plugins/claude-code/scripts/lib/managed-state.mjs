@@ -12,6 +12,13 @@ export function newTaskId() {
   return crypto.randomUUID();
 }
 
+export function exitTaskState({ limitHit, cancelRequested, recoveryAttempts }, code) {
+  if (limitHit) return "timed_out";
+  if (cancelRequested) return "cancelled";
+  if (recoveryAttempts && code !== 0) return "paused";
+  return code === 0 ? "exited" : "failed";
+}
+
 export function taskDir(id) {
   if (!TASK_ID.test(String(id))) throw new Error("无效的任务 ID");
   return path.join(MANAGED_ROOT, "tasks", id);

@@ -6,7 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import pty from "node-pty";
-import { appendEvent, readJson, readTask, taskPath, writeRuntime, writeTask } from "./lib/managed-state.mjs";
+import { appendEvent, exitTaskState, readJson, readTask, taskPath, writeRuntime, writeTask } from "./lib/managed-state.mjs";
 import { removeHandbackCommand } from "./lib/managed-config.mjs";
 import { launchVisibleWindow } from "./lib/managed-window.mjs";
 import { scheduleNext } from "./lib/managed-service.mjs";
@@ -168,8 +168,7 @@ terminal.onData((data) => {
 terminal.onExit(({ exitCode: code }) => {
   exited = true;
   exitCode = code;
-  finalState = task.recoveryAttempts && code !== 0 ? "paused"
-    : limitHit ? "timed_out" : cancelRequested ? "cancelled" : code === 0 ? "exited" : "failed";
+  finalState = exitTaskState({ limitHit, cancelRequested, recoveryAttempts: task.recoveryAttempts }, code);
   writeTask({ ...readTask(id), state: finalState });
   if (finalState === "paused") appendEvent(id, { type: "recovery_failed", exitCode: code });
   removeHandbackCommand(task, task.handbackCommand?.owned);

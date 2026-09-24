@@ -43,6 +43,12 @@ test("进程已退出而任务仍显示启动中时自动修复状态", () => {
   assert.ok(state.readEvents(id, 0, 20).events.some((event) => event.type === "exited_state_repaired"));
 });
 
+test("主动取消优先于恢复失败，达到上限优先于主动取消", () => {
+  assert.equal(state.exitTaskState({ recoveryAttempts: 1, cancelRequested: true }, 1), "cancelled");
+  assert.equal(state.exitTaskState({ recoveryAttempts: 1, cancelRequested: true, limitHit: true }, 1), "timed_out");
+  assert.equal(state.exitTaskState({ recoveryAttempts: 1 }, 1), "paused");
+});
+
 test("模型选择只接受当前 Claude Code 配置中的名称", () => {
   assert.equal(state.resolveModel(), null);
   assert.equal(state.resolveModel("sonnet"), "deepseek-flash");

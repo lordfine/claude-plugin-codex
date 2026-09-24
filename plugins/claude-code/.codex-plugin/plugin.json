@@ -1,6 +1,6 @@
 {
   "name": "claude-code",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "让 Codex 管理 Claude Code 可见会话、权限、进度与验收。",
   "author": {
     "name": "cc-plugin-codex"
